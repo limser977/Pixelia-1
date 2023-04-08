@@ -1,0 +1,427 @@
+import numpy as np
+from typing import Tuple
+import json
+import re
+np.set_printoptions(threshold=np.inf)
+
+INPUT_DIV = 50 # Число входных данных
+HIDDEN_DIV = 256 # Число скрытых данных
+OUTPUT_DIV = 50 # Число выходных данных
+HIDDEN_STATE_SIZE = 256 # Память нейросети
+NUM_SEQUENCES = 1 # Колличество предлажений
+MAX_SEQUENCE_LENGTH = 50 # Максимальная длина предложений
+NUM_DECODER_TOCKEN = 3317 # Колличество уникальных слов
+
+# Загрузка датасета 
+def load_dataset(file_path, num_dialogs=1000):
+    """
+     Загружает набор данных из файла. Это помощник функции для: func: ` ~gensim. модели. г
+     
+     Args:
+     	 file_path: Путь к файлу для загрузки
+     	 num_dialogs: Количество диалогов, которые нужно загрузить
+     
+     Returns: 
+     	 Сумма входов и выходов для каждого диалога. Первый - вход, а второй -
+    """
+    inputs = []
+    outputs = []
+    with open(file_path, 'r') as f:
+        # Добавьте вопрос и ответ к вводам и выводам
+        for i, line in enumerate(f):
+            # Этот метод будет нарушать следующие диалоговые диалоги, если текущие диалоги не в списке.
+            if i >= num_dialogs:
+                break
+            data = json.loads(line)
+            inputs.append(data['question'])
+            outputs.append(data['answer'])
+    return inputs, outputs
+path = 'C:\Infinity Node\dataset.jsonl'
+inputs_data, targets_data = load_dataset(path, num_dialogs=1000)
+
+
+# Создаем случайный массив для decoder_inputs_data
+decoder_inputs_data = np.random.rand(NUM_SEQUENCES, MAX_SEQUENCE_LENGTH, NUM_DECODER_TOCKEN)
+
+# Создаем случайный массив для decoder_outputs_data
+decoder_outputs_data = np.random.rand(NUM_SEQUENCES, MAX_SEQUENCE_LENGTH, NUM_DECODER_TOCKEN)
+
+# Создание словаря | нейросети нужны цифры, этот метод дает каждому слову свой номер
+def set_vocabulary(inputs_data):
+    """
+     Установка словарного запаса из входящих данных. Эта функция используется для установки словарного запаса для обу
+     
+     Args:
+     	 inputs_data: строка с данными из входящего файла.
+     
+     Returns: 
+     	 словарь word_to_index с ключевым = словом и значением = индекс. словарь index_to
+    """
+    
+    # Создаем список всех слов в датасете
+    all_words = []
+    words = re.findall(r'\w+|\?|\!', str(inputs_data))
+    words = [word.lower() for word in words]
+    all_words.extend(words)
+    
+    # создаем словарь
+    word_to_index = {}
+    index_to_word = {}
+    # Установите индекс слова на word_to_index и index_to_word на индекс слова во всех_словах.
+    for index, word in enumerate(set(all_words)):
+        word_to_index[word] = index
+        index_to_word[index] = word
+        
+    return word_to_index, index_to_word
+word_to_index, index_to_word = set_vocabulary(inputs_data)
+
+# Вспомогательные методы
+def sigmoid(x):
+    """
+     Сигмоидная функция для использования с numpy. ma. сигмоид. В этом случае мы используем 1
+     
+     Args:
+     	 x: Немпный массив формы (nbitems), где x [ i ] является ith значение сигмоида
+     
+     Returns: 
+     	 массив формы (nbitems)
+    """
+    return 1 / (1 + np.exp(-x))
+def tanh(x):
+    """
+     Функция гиперболической тангентной функции. Эта функция эквивалентна:. Для каждого элемента ` x
+     
+     Args:
+     	 x: массив номпи или перечень массивов номпи, которые должны быть преобразованы
+     
+     Returns: 
+     	 numpy array или перечень numpy arrays преобразованные в: func : ` numpy. tanh
+    """
+    return np.tanh(x)
+def sigmoid_derivative(x):
+    """
+     Дериватив сигмоидной функции. математика:. В этом случае мы принимаем дериватив логистической
+     
+     Args:
+     	 x: Тенсор или переменная для оценки производной с точки зрения.
+     
+     Returns: 
+     	 Результат производного с точки зрения ввода. >>> из sympy. polys. mahalanobis import sigmo
+    """
+    return sigmoid(x) * (1 - sigmoid(x))
+
+
+# Обработка текста под нужды нейросети
+def input_process(text, word_to_index):
+    """
+     Процесс ввода и возвращения списка слов и индекса. Эта функция используется для ввода слова в инде
+     
+     Args:
+     	 text: Текст слова к обработке. Предполагается, что вход формата слово = > индекс
+     	 word_to_index: словарь с ключевым словом и
+     
+     Returns: 
+     	 Отношения
+    """
+    # Создаем матрицу слов из предложения
+    words_list_raw = re.findall(r'\w+|\?|\!', text)
+    words_list_raw = [word.lower() for word in words_list_raw]
+    words_index_list = [word_to_index.get(word, 0) for word in words_list_raw]
+    
+    # Дополняем матрицу слов до 50 значений
+    words_index_list = words_index_list + [-1] * (50 - len(words_index_list))
+    
+    # Преобразовываем список индексов в numpy массив
+    words_index_array = np.array(words_index_list)
+    
+    return words_index_array
+def decode_text(word_to_index, arr):
+    """
+     Декодирует текст из массива. Эта функция используется для декодирования текста из массива. В случае
+     
+     Args:
+     	 word_to_index: словарь с ключевым словом и индексом как значением
+     	 arr: Массив с текстом в качестве значения.
+     
+     Returns: 
+     	 текст в виде строки с декодированными словами из массива. >>> декодировать_текст ( {'
+    """
+    """
+    Расшифровывает массив arr из словаря word_to_index.
+    """
+    index_to_word = {v: k for k, v in word_to_index.items()}
+    words = []
+    # Добавьте слова к списку слов.
+    for i in arr:
+        # Добавьте слово к списку слов.
+        if i in index_to_word:
+            words.append(index_to_word[i])
+    return ' '.join(words)
+
+
+
+print(decode_text(word_to_index, input_process(inputs_data[4], word_to_index)))
+print(input_process(inputs_data[4], word_to_index))
+
+# Макет ячейки
+class LSTM_Cell_Encoder:
+    def __init__(self, hidden_size=256, learning_rate=0.01, output_size=50, input_size=50):
+        """
+         Инициализировать нейронную сеть с скрытыми и выходной параметрами.
+         
+         Args:
+         	 hidden_size: размер скрытого слоя (по умолчанию = 256)
+         	 learning_rate: скорость обучения (по умолчанию = 0, 01)
+         	 output_size: размер выходной нейроны (по умолчанию = 50)
+         	 input_size: размер входящих нейронов (по умолчанию
+        """
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.output_size = output_size
+        self.learning_rate = learning_rate
+        
+        # Инициализация весов для гейтов
+        self.Wf = np.random.randn(hidden_size, input_size + hidden_size) / np.sqrt(hidden_size / 2)
+        self.Wi = np.random.randn(hidden_size, input_size + hidden_size) / np.sqrt(hidden_size / 2)
+        self.Wo = np.random.randn(hidden_size, input_size + hidden_size) / np.sqrt(hidden_size / 2)
+        self.Wc = np.random.randn(hidden_size, input_size + hidden_size) / np.sqrt(hidden_size / 2)
+        
+        # Инициализация весов для выходного слоя
+        self.Wy = np.random.randn(output_size, hidden_size) / np.sqrt(output_size / 2)
+        self.by = np.zeros((output_size, 1))
+        
+        # Инициализация векторов состояния
+        self.h = np.zeros((hidden_size, 1))
+        self.c = np.zeros((hidden_size, 1))
+        
+    def forward(self, x):
+        """
+         Назад нейронная сеть. x [ i ] - это i - th элемент Wf Wi Wo и c_hat
+         
+         Args:
+         	 x: Numpy массив с формой [ n_samples n_features ]
+         
+         Returns: 
+         	 Numpy array с формой [ n_samples n_features ] или [ n_samples n_features
+        """
+        # Разбиваем входной вектор на x(t) и h(t-1)
+        xt = x
+        ht = self.h
+        
+        # Вычисляем значения гейтов
+        ft = sigmoid(self.Wf @ np.vstack((xt, ht)))
+        it = sigmoid(self.Wi @ np.vstack((xt, ht)))
+        ot = sigmoid(self.Wo @ np.vstack((xt, ht)))
+        c_hat = np.tanh(self.Wc @ np.vstack((xt, ht)))
+        
+        # Вычисляем новое значение состояния
+        self.c = ft * self.c + it * c_hat
+        self.h = ot * tanh(self.c)
+        
+        # Вычисляем выходной вектор
+        output = self.Wy @ self.h + self.by
+        
+        # Возвращаем выходной вектор и значение состояния
+        return output, self.h
+
+    def train(self, X: list, y : list, epochs: int = 10):
+        """
+         Это метод обучения нейронной сети в течение нескольких эпох.
+         
+         Args:
+         	 X: перечень точек данных, каждый из которых имеет форму (n_samples n_features)
+         	 y: перечень ярлыков каждой формы (n_samples)
+         	 epochs: количество эпох обучения нейронной сети
+         
+         Returns: 
+         	 словарь с следующими ключами : X : данные о обучении y : целевые данные (1 - горяче
+        """
+        # нобозменов зназбода зназбода зназбода зназбода зназбода зназбо
+        for epoch in range(epochs):
+        # Для каждого элемента последовательности
+            # Нободена на на на на на на на на на на на на на на на на на на на на на на на на на
+            for i in range(len(X)):
+                x = X[i]
+                y_true = y[i]
+                
+                # Разбиваем входной вектор на x(t) и h(t-1)
+                xt = x
+                ht = self.h
+                
+                # Вычисляем значения гейтов
+                ft = sigmoid(self.Wf @ np.vstack((xt, ht)))
+                it = sigmoid(self.Wi @ np.vstack((xt, ht)))
+                ot = sigmoid(self.Wo @ np.vstack((xt, ht)))
+                c_hat = tanh(self.Wc @ np.vstack((xt, ht)))
+                
+                # Вычисляем новое значение состояния
+                self.c = ft * self.c + it * c_hat
+                self.h = ot * np.tanh(self.c)
+                
+                # Вычисляем выходной вектор
+                output = self.Wy @ self.h + self.by
+                
+                # Вычисляем ошибку выходного слоя
+                dWy = np.outer(output - y_true, self.h)
+                dby = output - y_true
+                
+                # Вычисляем ошибку скрытого слоя
+                dh = self.Wy.T @ (output - y_true)
+                dc = dh * ot * (1 - np.tanh(self.c) ** 2) + self.dc_prev * ft
+                
+                # Вычисляем ошибки гейтов
+                dft = dc * self.c_prev
+                dit = dc * c_hat
+                dot = dh * np.tanh(self.c)
+                dc_hat = dc * it
+                
+                # Вычисляем ошибку на входе слоя LSTM
+                dxt = self.Wf[:self.input_size].T @ dft + self.Wi[:self.input_size].T @ dit + self.Wo[:self.input_size].T @ dot + self.Wc[:self.input_size].T @ dc_hat
+                
+                # Обновляем веса
+                self.Wf -= self.learning_rate * np.hstack((dft, dft * ht.T))
+                self.Wi -= self.learning_rate * np.hstack((dit, dit * ht.T))
+                self.Wo -= self.learning_rate * np.hstack((dot, dot * ht.T))
+                self.Wc -= self.learning_rate * np.hstack((dc_hat, dc_hat * ht.T))
+                self.Wy -= self.learning_rate * dWy
+                
+                self.by -= self.learning_rate * dby
+                
+                # Сохраняем значения для обратного прохода на следующий временной шаг
+                self.dc_prev = dc
+                self.c_prev = self.c
+                
+                # Возвращаем выходной вектор и ошибку скрытого слоя для обратного прохода на предыдущий временной шаг
+        return output, dh, dc
+class LSTM_Cell_Decoder:  
+    def __init__(self, input_size=50, hidden_size=256, output_size=50):
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.output_size = output_size
+        
+        # Инициализация весов
+        self.Wf = np.random.randn(hidden_size + output_size, hidden_size)
+        self.Wi = np.random.randn(hidden_size + output_size, hidden_size)
+        self.Wo = np.random.randn(hidden_size + output_size, hidden_size)
+        self.Wc = np.random.randn(hidden_size + output_size, hidden_size)
+        self.Wy = np.random.randn(hidden_size, output_size)
+        self.by = np.random.randn(output_size)
+        
+        # Инициализация состояний
+        self.c = np.zeros((1, hidden_size))
+        self.h = np.zeros((1, hidden_size))
+        
+        # Инициализация ошибок
+        self.dc_prev = np.zeros((1, hidden_size))
+        self.c_prev = np.zeros((1, hidden_size))
+        
+        # Инициализация скорости обучения
+        self.learning_rate = 0.1
+    def forward(self, x: np.ndarray, h_prev: np.ndarray, c_prev: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Это метод прямого прохода для LSTM-декодера.
+        
+        Args:
+        x: Входной вектор для текущего временного шага, форма (n_features,)
+        h_prev: Предыдущее значение скрытого состояния декодера, форма (n_hidden,)
+        c_prev: Предыдущее значение состояния LSTM-декодера, форма (n_hidden,)
+        
+        Returns:
+        output: Выходное значение декодера, форма (n_vocab,)
+        h: Текущее значение скрытого состояния декодера, форма (n_hidden,)
+        c: Текущее значение состояния LSTM-декодера, форма (n_hidden,)
+        """
+        # Разбиваем входной вектор на x(t) и h(t-1)
+        xt = x.reshape(-1, 1)  # изменяем форму вектора на (n_features, 1)
+        ht = h_prev.reshape(-1, 1)  # изменяем форму вектора на (n_hidden, 1)
+
+        # Вычисляем значения гейтов
+        ft = sigmoid(self.Wf @ np.vstack((xt, ht)))
+        it = sigmoid(self.Wi @ np.vstack((xt, ht)))
+        ot = sigmoid(self.Wo @ np.vstack((xt, ht)))
+        c_hat = tanh(self.Wc @ np.vstack((xt, ht)))
+
+        # Вычисляем новое значение состояния
+        c = ft * c_prev + it * c_hat
+        h = ot * np.tanh(c)
+
+        # Вычисляем выходной вектор
+        output = self.Wy @ h + self.by
+
+        return output, h.flatten(), c.flatten()
+    
+    def train(self, X: list, y : list, epochs: int = 10):
+        for epoch in range(epochs):
+            for i in range(len(X)):
+                x = X[i]
+                y_true = y[i]
+
+                # Разбиваем входной вектор на x(t) и h(t-1)
+                xt = x
+                ht = self.h
+
+                # Вычисляем значения гейтов
+                ft = sigmoid(self.Wf @ np.vstack((xt, ht)))
+                it = sigmoid(self.Wi @ np.vstack((xt, ht)))
+                ot = sigmoid(self.Wo @ np.vstack((xt, ht)))
+                c_hat = tanh(self.Wc @ np.vstack((xt, ht)))
+
+                # Вычисляем новое значение состояния
+                self.c = ft * self.c + it * c_hat
+                self.h = ot * np.tanh(self.c)
+
+                # Вычисляем выходной вектор
+                output = self.Wy @ self.h + self.by
+
+                # Вычисляем ошибку выходного слоя
+                dWy = np.outer(output - y_true, self.h)
+                dby = output - y_true
+
+                # Вычисляем ошибку скрытого слоя
+                dh = self.Wy.T @ (output - y_true)
+                dc = dh * ot * (1 - np.tanh(self.c) ** 2) + self.dc_prev * ft
+
+                # Вычисляем ошибки гейтов
+                dft = dc * self.c_prev
+                dit = dc * c_hat
+                dot = dh * np.tanh(self.c)
+                dc_hat = dc * it
+
+                # Вычисляем ошибку на входе слоя LSTM
+                dxt = self.Wf[:self.input_size].T @ dft + self.Wi[:self.input_size].T @ dit + self.Wo[:self.input_size].T @ dot + self.Wc[:self.input_size].T @ dc_hat
+
+                # Обновляем веса
+                self.Wf -= self.learning_rate * np.hstack((dft, dft * ht.T))
+                self.Wi -= self.learning_rate * np.hstack((dit, dit * ht.T))
+                self.Wo -= self.learning_rate * np.hstack((dot, dot * ht.T))
+                self.Wc -= self.learning_rate * np.hstack((dc_hat, dc_hat * ht.T))
+                self.Wy -= self.learning_rate * dWy
+
+                self.by -= self.learning_rate * dby
+
+                # Сохраняем значения для обратного прохода на следующий временной шаг
+                self.dc_prev = dc
+                self.c_prev = self.c
+
+        return output, dh, dc
+
+# Создание цепи из LSTM_Ячеек
+cell_encoder_1 = LSTM_Cell_Encoder(INPUT_DIV, HIDDEN_DIV)
+cell_encoder_2 = LSTM_Cell_Encoder(HIDDEN_DIV, HIDDEN_DIV)
+cell_encoder_3 = LSTM_Cell_Encoder(HIDDEN_DIV, HIDDEN_DIV)
+
+cell_decoder_1 = LSTM_Cell_Decoder(OUTPUT_DIV, HIDDEN_DIV)
+cell_decoder_2 = LSTM_Cell_Decoder(HIDDEN_DIV, HIDDEN_DIV)
+cell_decoder_3 = LSTM_Cell_Decoder(HIDDEN_DIV, HIDDEN_DIV)
+
+# Сборка нейросети
+def train_LSTM(epochs=10):
+    # Обучение кодировщика
+    cell_encoder_1.train(inputs_data[0], targets_data[0], epochs)
+    cell_encoder_2.train(cell_encoder_1.h, cell_encoder_1.c, epochs)
+    cell_encoder_3.train(cell_encoder_2.h, cell_encoder_2.c, epochs)
+
+    # Обучение декодера
+    cell_decoder_1.train(decoder_inputs_data[0], decoder_outputs_data[0], epochs, initial_h=cell_encoder_3.h, initial_c=cell_encoder_3.c)
+    cell_decoder_2.train(cell_decoder_1.h, cell_decoder_1.c, epochs)
+    cell_decoder_3.train(cell_decoder_2.h, cell_decoder_2.c, epochs, initial_h=cell_encoder_3.h, initial_c=cell_encoder_3.c)
