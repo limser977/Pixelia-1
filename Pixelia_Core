@@ -1,5 +1,6 @@
 import numpy as np
 from typing import Tuple
+from tensorflow.keras.layers import Dropout
 import json
 import re
 np.set_printoptions(threshold=np.inf)
@@ -10,7 +11,9 @@ OUTPUT_DIV = 50 # Число выходных данных
 HIDDEN_STATE_SIZE = 256 # Память нейросети
 NUM_SEQUENCES = 1 # Колличество предлажений
 MAX_SEQUENCE_LENGTH = 50 # Максимальная длина предложений
-NUM_DECODER_TOCKEN = 3317 # Колличество уникальных слов
+START_TOKEN = 0 # Текущий слово начала п
+END_TOKEN = 3317 # Колличество уникальных слов
+UNK_TOKEN = 3318 # Слово неизвестное нейросети
 
 # Загрузка датасета 
 def load_dataset(file_path, num_dialogs=1000):
@@ -41,10 +44,10 @@ inputs_data, targets_data = load_dataset(path, num_dialogs=1000)
 
 
 # Создаем случайный массив для decoder_inputs_data
-decoder_inputs_data = np.random.rand(NUM_SEQUENCES, MAX_SEQUENCE_LENGTH, NUM_DECODER_TOCKEN)
+decoder_inputs_data = np.random.rand(NUM_SEQUENCES, MAX_SEQUENCE_LENGTH, END_TOKEN)
 
 # Создаем случайный массив для decoder_outputs_data
-decoder_outputs_data = np.random.rand(NUM_SEQUENCES, MAX_SEQUENCE_LENGTH, NUM_DECODER_TOCKEN)
+decoder_outputs_data = np.random.rand(NUM_SEQUENCES, MAX_SEQUENCE_LENGTH, END_TOKEN)
 
 # Создание словаря | нейросети нужны цифры, этот метод дает каждому слову свой номер
 def set_vocabulary(inputs_data):
@@ -65,15 +68,16 @@ def set_vocabulary(inputs_data):
     all_words.extend(words)
     
     # создаем словарь
-    word_to_index = {}
-    index_to_word = {}
+    word2index = {}
+    index2word = {}
     # Установите индекс слова на word_to_index и index_to_word на индекс слова во всех_словах.
     for index, word in enumerate(set(all_words)):
-        word_to_index[word] = index
-        index_to_word[index] = word
-        
-    return word_to_index, index_to_word
-word_to_index, index_to_word = set_vocabulary(inputs_data)
+        word2index[word] = index
+        index2word[index] = word
+    word2index['unknown'] = UNK_TOKEN
+    index2word[UNK_TOKEN] = 'unknown'
+    return word2index, index2word
+
 
 # Вспомогательные методы
 def sigmoid(x):
@@ -110,9 +114,10 @@ def sigmoid_derivative(x):
     """
     return sigmoid(x) * (1 - sigmoid(x))
 
+word2index, index2word = set_vocabulary(inputs_data)
 
 # Обработка текста под нужды нейросети
-def input_process(text, word_to_index):
+def input_process(text, word2index=word2index):
     """
      Процесс ввода и возвращения списка слов и индекса. Эта функция используется для ввода слова в инде
      
@@ -126,7 +131,7 @@ def input_process(text, word_to_index):
     # Создаем матрицу слов из предложения
     words_list_raw = re.findall(r'\w+|\?|\!', text)
     words_list_raw = [word.lower() for word in words_list_raw]
-    words_index_list = [word_to_index.get(word, 0) for word in words_list_raw]
+    words_index_list = [word2index.get(word, 0) for word in words_list_raw]
     
     # Дополняем матрицу слов до 50 значений
     words_index_list = words_index_list + [-1] * (50 - len(words_index_list))
@@ -135,7 +140,7 @@ def input_process(text, word_to_index):
     words_index_array = np.array(words_index_list)
     
     return words_index_array
-def decode_text(word_to_index, arr):
+def decode_text(arr, word2index=word2index):
     """
      Декодирует текст из массива. Эта функция используется для декодирования текста из массива. В случае
      
@@ -149,19 +154,19 @@ def decode_text(word_to_index, arr):
     """
     Расшифровывает массив arr из словаря word_to_index.
     """
-    index_to_word = {v: k for k, v in word_to_index.items()}
+    index2word = {v: k for k, v in word2index.items()}
     words = []
     # Добавьте слова к списку слов.
     for i in arr:
         # Добавьте слово к списку слов.
-        if i in index_to_word:
-            words.append(index_to_word[i])
+        if i in index2word:
+            words.append(index2word[i])
     return ' '.join(words)
 
-
-
-print(decode_text(word_to_index, input_process(inputs_data[4], word_to_index)))
-print(input_process(inputs_data[4], word_to_index))
+print(word2index['unknown'])
+print(index2word[UNK_TOKEN])
+print(decode_text(input_process(inputs_data[4], word2index)))
+print(input_process(inputs_data[4]))
 
 # Макет ячейки
 class LSTM_Cell_Encoder:
@@ -294,10 +299,12 @@ class LSTM_Cell_Encoder:
                 # Возвращаем выходной вектор и ошибку скрытого слоя для обратного прохода на предыдущий временной шаг
         return output, dh, dc
 class LSTM_Cell_Decoder:  
-    def __init__(self, input_size=50, hidden_size=256, output_size=50):
+    def __init__(self, input_size=50, hidden_size=256, output_size=50, initial_h, initial_c):
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.output_size = output_size
+        self.initial_h = initial_h
+        self.initial_c = initial_c
         
         # Инициализация весов
         self.Wf = np.random.randn(hidden_size + output_size, hidden_size)
@@ -314,6 +321,8 @@ class LSTM_Cell_Decoder:
         # Инициализация ошибок
         self.dc_prev = np.zeros((1, hidden_size))
         self.c_prev = np.zeros((1, hidden_size))
+        self.initial_h = np.random.randn(hidden_size, 1)
+        self.initial_c = np.random.randn(hidden_size, 1)
         
         # Инициализация скорости обучения
         self.learning_rate = 0.1
@@ -414,14 +423,91 @@ cell_decoder_1 = LSTM_Cell_Decoder(OUTPUT_DIV, HIDDEN_DIV)
 cell_decoder_2 = LSTM_Cell_Decoder(HIDDEN_DIV, HIDDEN_DIV)
 cell_decoder_3 = LSTM_Cell_Decoder(HIDDEN_DIV, HIDDEN_DIV)
 
+# Создание цепи из LSTM_Ячеек с dropout
+cell_encoder_1 = LSTM_Cell_Encoder(INPUT_DIV, HIDDEN_DIV)
+dropout_encoder_1 = Dropout(0.2)
+cell_encoder_2 = LSTM_Cell_Encoder(HIDDEN_DIV, HIDDEN_DIV)
+dropout_encoder_2 = Dropout(0.2)
+cell_encoder_3 = LSTM_Cell_Encoder(HIDDEN_DIV, HIDDEN_DIV)
+dropout_encoder_3 = Dropout(0.2)
+
+cell_decoder_1 = LSTM_Cell_Decoder(OUTPUT_DIV, HIDDEN_DIV)
+dropout_decoder_1 = Dropout(0.2)
+cell_decoder_2 = LSTM_Cell_Decoder(HIDDEN_DIV, HIDDEN_DIV)
+dropout_decoder_2 = Dropout(0.2)
+cell_decoder_3 = LSTM_Cell_Decoder(HIDDEN_DIV, HIDDEN_DIV)
+dropout_decoder_3 = Dropout(0.2)
+
 # Сборка нейросети
 def train_LSTM(epochs=10):
-    # Обучение кодировщика
-    cell_encoder_1.train(inputs_data[0], targets_data[0], epochs)
-    cell_encoder_2.train(cell_encoder_1.h, cell_encoder_1.c, epochs)
-    cell_encoder_3.train(cell_encoder_2.h, cell_encoder_2.c, epochs)
+    for i in range(epochs):
+        
+        
+        cell_decoder_1.train(decoder_inputs_data[i], decoder_outputs_data[i], epochs, initial_h=cell_encoder_3.h, initial_c=cell_encoder_3.c)
+        
+        
+        
+        
+        # Обучение кодировщика
+        cell_encoder_1.train(input_process(inputs_data[i]), input_process(targets_data[i]), epochs)
+        dropout_encoder_1(cell_encoder_1)
+        cell_encoder_2.train(dropout_encoder_1.h, dropout_encoder_1.c, epochs)
+        dropout_encoder_2(cell_encoder_2)
+        cell_encoder_3.train(dropout_encoder_2.h, dropout_encoder_2.c, epochs)
+        dropout_encoder_3(cell_encoder_3)
 
-    # Обучение декодера
-    cell_decoder_1.train(decoder_inputs_data[0], decoder_outputs_data[0], epochs, initial_h=cell_encoder_3.h, initial_c=cell_encoder_3.c)
-    cell_decoder_2.train(cell_decoder_1.h, cell_decoder_1.c, epochs)
-    cell_decoder_3.train(cell_decoder_2.h, cell_decoder_2.c, epochs, initial_h=cell_encoder_3.h, initial_c=cell_encoder_3.c)
+        # Обучение декодера
+
+        dropout_decoder_1(cell_decoder_1)
+        cell_decoder_2.train(dropout_decoder_1.h, dropout_decoder_1.c, epochs)
+        dropout_decoder_2(cell_decoder_2)
+        cell_decoder_3.train(dropout_decoder_2.h, dropout_decoder_2.c, epochs, initial_h=cell_encoder_3.h, initial_c=cell_encoder_3.c)
+        dropout_decoder_3(cell_decoder_3)
+
+# Функция для генерации ответа на входное сообщение
+def generate_answer(input_text):
+    # Преобразуем входное сообщение в массив индексов токенов
+    input_seq = input_process(input_text)
+
+    # Запускаем кодировщик, чтобы получить скрытое состояние
+    encoder_h1, encoder_c1 = cell_encoder_1.forward(input_seq)
+    encoder_h2, encoder_c2 = cell_encoder_2.forward(encoder_h1, encoder_c1)
+    encoder_h3, encoder_c3 = cell_encoder_3.forward(encoder_h2, encoder_c2)
+
+    # Создаем начальные входные данные для декодера
+    decoder_input_seq = np.array([[word2index[START_TOKEN]]])
+
+    # Создаем переменные для хранения ответа
+    output_text = ""
+    stop_condition = False
+
+    # Запускаем цикл генерации ответа
+    while not stop_condition:
+        # Вычисляем выходное состояние и скрытое состояние декодера
+        decoder_output, decoder_h1, decoder_c1 = cell_decoder_1.forward(decoder_input_seq, encoder_h3, encoder_c3)
+        decoder_output, decoder_h2, decoder_c2 = cell_decoder_2.forward(decoder_output, decoder_h1, decoder_c1)
+        decoder_output, decoder_h3, decoder_c3 = cell_decoder_3.forward(decoder_output, decoder_h2, decoder_c2)
+
+        # Выбираем индекс следующего токена на основе полученного выхода декодера
+        sampled_token_index = np.argmax(decoder_output)
+
+        # Получаем слово из словаря по индексу
+        sampled_word = index2word[sampled_token_index]
+
+        # Добавляем слово к ответу
+        output_text += " " + sampled_word
+
+        # Если полученный токен - END_TOKEN или длина ответа достигла максимальной длины
+        if sampled_word == END_TOKEN or len(output_text.split()) > MAX_SEQUENCE_LENGTH:
+            stop_condition = True
+        else:
+            # Используем полученный индекс токена как вход для следующей итерации декодера
+            decoder_input_seq = np.array([[sampled_token_index]])
+
+    # Возвращаем сгенерированный ответ
+    return output_text.strip()
+
+train_LSTM(epochs=10)
+
+while True:
+    generate_answer(input("Введите текст: "))
